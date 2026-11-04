@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="fil">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>School Emergency Map</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0f172a;color:#f8fafc}
+header{padding:10px 14px;background:#1e293b;display:flex;justify-content:space-between;align-items:center;gap:8px}
+h1{font-size:15px;margin:0;line-height:1.2}
+main{max-width:900px;margin:0 auto;padding:10px}
+#map svg{width:100%;height:auto;display:block;border-radius:10px}
+body.op #map [data-id]{cursor:pointer}
+.blink{animation:b 1s infinite}
+@keyframes b{50%{opacity:.45}}
+.panel{background:#1e293b;border-radius:10px;padding:10px;margin-top:10px}
+.panel h2{font-size:13px;margin:0 0 8px;color:#94a3b8;font-weight:600}
+.row{display:flex;flex-wrap:wrap;gap:6px}
+button{font:inherit;font-size:14px;border:0;border-radius:8px;padding:10px 12px;background:#334155;color:#f8fafc;cursor:pointer}
+button:active{transform:scale(.97)}
+button.sel{background:#dc2626}
+button.primary{background:#2563eb;font-weight:700;flex:1 1 100%}
+button.clear{background:#16a34a;font-weight:700}
+button.small{padding:6px 10px;font-size:12px}
+#trail{margin:0;padding-left:20px;font-size:14px;line-height:1.6}
+.hint{font-size:13px;color:#cbd5e1;margin:6px 0 0}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#000c;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;max-width:90%;display:none;text-align:center}
+.op-only{display:none}
+body.op .op-only{display:block}
+body.op .mon-only{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="school"></h1>
+  <button class="small" id="opBtn">Operator</button>
+</header>
+<main>
+  <div id="map"></div>
+
+  <div class="panel op-only">
+    <h2>1. Piliin ang uri ng emergency</h2>
+    <div class="row" id="types"></div>
+    <h2 style="margin-top:12px">2. I-tap ang area sa mapa kung nasaan ito</h2>
+    <p class="hint">Pwedeng i-tap ulit ang ibang area kapag lumipat ang intruder. Maitatala ang ruta (may numero sa bawat area na dinaanan).</p>
+    <h2 style="margin-top:12px">3. Ipadala sa GC</h2>
+    <div class="row">
+      <button class="primary" id="shareBtn">Ibahagi ang mapa sa GC</button>
+      <button id="dlBtn">I-download ang larawan</button>
+      <button id="copyMsgBtn">Kopyahin ang mensahe</button>
+      <button id="copyLinkBtn">Kopyahin ang link</button>
+      <button id="undoBtn">Ibalik ang huling tap</button>
+      <button class="clear" id="clearBtn">ALL CLEAR</button>
+    </div>
+  </div>
+
+  <div class="panel mon-only">
+    <h2>Monitor</h2>
+    <p class="hint" id="monHint">Tingnan ang pinakabagong mapa na ipinadala sa GC. Sundin ang school emergency protocol.</p>
+  </div>
+
+  <div class="panel" id="trailBox" style="display:none">
+    <h2>Ruta / mga lokasyon</h2>
+    <ol id="trail"></ol>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+/* ====== I-EDIT DITO ====== */
+const SCHOOL = "Sunny Brooke Elementary School";
+const PIN = "1234";   // palitan; pantaboy lang ito ng aksidenteng pagbukas ng operator mode
+
+// Mga area ng mapa (coordinates ng mapa ng paaralan, 990 x 636).
+// R(x,y,w,h) = parihaba. Para sa hindi parihaba, gumamit ng pts:[[x,y],...].
+// Huwag gumamit ng "." o "~" sa id. label = maikling nakasulat sa mapa, name = buong pangalan sa mensahe.
+const R = (x,y,w,h)=>[[x,y],[x+w,y],[x+w,y+h],[x,y+h]];
+const Y = "#ffff00", B = "#4472c4", W = "#ffffff", K = "#111827";
+const AREAS = [
+  // mga kalsada (unang iguguhit)
+  {id:"road_mid",  name:"Kalsada sa Gitna (Bldg 4-1 / Bldg 7-11)", label:"KALSADA", rot:1, fs:13, pts:R(417,85,56,455), fill:K, tc:"#fff"},
+  {id:"road_east", name:"Kalsada sa Silangan (Bldg 6-11)",         label:"KALSADA", rot:1, fs:13, pts:R(913,85,53,440), fill:K, tc:"#fff"},
+  {id:"road_main", name:"Main Road (Entrance papuntang Covered Court)", label:"MAIN ROAD", fs:14, pts:R(160,532,533,70), fill:K, tc:"#fff"},
+  // mga gate
+  {id:"entrance",  name:"Main Entrance / Exit", label:"ENTRANCE / EXIT", fs:11, pts:R(77,548,76,46), fill:"#22c55e"},
+  {id:"exitgate",  name:"Exit Gate (Hilaga)",   label:"EXIT GATE", fs:9, pts:R(168,53,64,16), fill:"#ef4444", tc:"#fff"},
+  {id:"gate_se",   name:"Gate (Timog-Silangan)", label:"GATE", fs:10, pts:R(956,622,30,32), fill:"#ef4444", tc:"#fff"},
+  // kanlurang bahagi
+  {id:"bldg4",  name:"Bldg 4", fs:20, pts:[[113,72],[388,69],[392,119],[127,121]], fill:Y},
+  {id:"bldg3",  name:"Bldg 3", fs:20, pts:[[147,141],[394,140],[395,189],[152,190]], fill:Y},
+  {id:"bldg2",  name:"Bldg 2", fs:20, pts:[[162,213],[401,212],[402,263],[176,252]], fill:Y},
+  {id:"ecopark",name:"Ecopark", fs:17, pts:[[193,294],[404,292],[405,346],[210,347]], fill:W},
+  {id:"bldg1",  name:"Bldg 1", fs:20, pts:[[250,367],[381,355],[391,492],[263,505]], fill:B, tc:"#fff"},
+  // hilagang bahagi
+  {id:"crop",   name:"Crop Museum (Garden)", fs:16, pts:R(472,58,316,42), fill:W},
+  {id:"bldg5",  name:"Bldg 5", fs:17, pts:R(794,58,80,38), fill:B, tc:"#fff"},
+  {id:"bldg6",  name:"Bldg 6", fs:17, pts:R(884,58,80,38), fill:B, tc:"#fff"},
+  // silangang hanay
+  {id:"bldg7",  name:"Bldg 7",  fs:24, pts:R(473,106,437,55), fill:Y},
+  {id:"bldg8",  name:"Bldg 8",  fs:24, pts:R(473,198,438,54), fill:Y},
+  {id:"bldg9",  name:"Bldg 9",  fs:24, pts:R(473,276,437,48), fill:Y},
+  {id:"bldg10", name:"Bldg 10", fs:24, pts:R(473,349,437,55), fill:Y},
+  {id:"bldg11", name:"Bldg 11", fs:24, pts:R(473,439,439,54), fill:Y},
+  // timog
+  {id:"court",  name:"Covered Court", fs:19, pts:[[692,527],[945,524],[946,647],[700,641]], fill:"#f9cb6b"},
+  {id:"stage",  name:"Stage", label:"STAGE", rot:1, fs:11, pts:R(945,524,24,63), fill:"#f9cb6b"},
+  {id:"bldg12", name:"Bldg 12", fs:22, pts:R(388,611,296,38), fill:Y},
+  {id:"gad",    name:"GAD Garden", fs:14, pts:R(296,610,86,40), fill:W}
+];
+const TYPES = {
+  intruder:{label:"INTRUDER", btn:"Intruder"},
+  fire:    {label:"SUNOG",    btn:"Sunog"},
+  quake:   {label:"LINDOL",   btn:"Lindol"},
+  medical: {label:"MEDICAL",  btn:"Medical"},
+  other:   {label:"EMERGENCY",btn:"Iba pa"}
+};
+/* ====== HANGGANG DITO ====== */
+
+const $ = id => document.getElementById(id);
+let state = {type:null, trail:[], clear:false, ct:0};
+let selType = "intruder";
+let mode = "monitor";
+
+const nameOf = id => (AREAS.find(a=>a.id===id)||{name:id}).name;
+const fmt = t => new Date(t).toLocaleTimeString("en-PH",{hour:"numeric",minute:"2-digit"});
+const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+
+function wrap(name, lim){
+  const words = name.split(" "), lines = [""];
+  words.forEach(w=>{
+    const l = lines[lines.length-1];
+    if((l+" "+w).trim().length > lim && l) lines.push(w); else lines[lines.length-1] = (l+" "+w).trim();
+  });
+  return lines;
+}
+function bbox(pts){
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  const x1=Math.min(...xs), x2=Math.max(...xs), y1=Math.min(...ys), y2=Math.max(...ys);
+  return {x:x1,y:y1,w:x2-x1,h:y2-y1,cx:(x1+x2)/2,cy:(y1+y2)/2};
+}
+
+function buildSVG(){
+  const tr = state.trail, cur = tr.length ? tr[tr.length-1] : null;
+  let bannerFill = "#16a34a", title = "WALANG ALERTO - LIGTAS", sub = SCHOOL;
+  if(cur){ bannerFill="#dc2626"; title = TYPES[state.type].label+" - "+nameOf(cur.id); sub = "Huling update: "+fmt(cur.t)+"  |  "+SCHOOL; }
+  else if(state.clear){ title="ALL CLEAR - LIGTAS NA"; sub = fmt(state.ct)+"  |  "+SCHOOL; }
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 990 696" font-family="Arial,Helvetica,sans-serif">`;
+  s += `<rect width="990" height="696" fill="#e2e8f0"/>`;
+  s += `<rect width="990" height="60" fill="${bannerFill}"/>`;
+  s += `<text x="495" y="31" text-anchor="middle" font-size="28" font-weight="bold" fill="#fff">${esc(title)}</text>`;
+  s += `<text x="495" y="52" text-anchor="middle" font-size="15" fill="#fff">${esc(sub)}</text>`;
+  s += `<g transform="translate(0,32)">`;
+  // bakod ng paaralan
+  s += `<polygon points="95,52 972,48 978,660 243,662 222,532" fill="#fff" stroke="#111" stroke-width="2"/>`;
+  // compass
+  s += `<g stroke="#111" fill="none"><circle cx="90" cy="330" r="46" stroke-width="2"/></g>`;
+  s += `<polygon points="90,286 100,320 134,330 100,340 90,374 80,340 46,330 80,320" fill="#111"/>`;
+  s += `<text x="90" y="278" text-anchor="middle" font-size="15" font-weight="bold">N</text>`;
+  s += `<text x="90" y="396" text-anchor="middle" font-size="15" font-weight="bold">S</text>`;
+  s += `<text x="26" y="336" text-anchor="middle" font-size="15" font-weight="bold">W</text>`;
+  s += `<text x="154" y="336" text-anchor="middle" font-size="15" font-weight="bold">E</text>`;
+  // mga area
+  AREAS.forEach(a=>{
+    const idx = []; tr.forEach((p,i)=>{ if(p.id===a.id) idx.push(i+1); });
+    const isCur = cur && cur.id===a.id;
+    const fill = isCur ? "#ef4444" : (idx.length ? "#fb923c" : a.fill);
+    const stroke = isCur ? "#7f1d1d" : "#475569";
+    const txt = isCur ? "#fff" : (idx.length ? "#111" : (a.tc||"#0f172a"));
+    const bb = bbox(a.pts);
+    const pts = a.pts.map(p=>p.join(",")).join(" ");
+    s += `<g data-id="${a.id}">`;
+    s += `<polygon class="${isCur?"blink":""}" points="${pts}" fill="${fill}" stroke="${stroke}" stroke-width="${isCur?4:1.5}" stroke-linejoin="round"/>`;
+    const label = a.label || a.name, fs = a.fs || 15;
+    if(a.rot){
+      s += `<text transform="rotate(-90 ${bb.cx} ${bb.cy})" x="${bb.cx}" y="${bb.cy+fs*0.35}" text-anchor="middle" font-size="${fs}" font-weight="bold" fill="${txt}">${esc(label)}</text>`;
+    } else {
+      const lines = wrap(label, Math.max(8, Math.floor(bb.w/(fs*0.62))));
+      const lh = fs*1.15, y0 = bb.cy - (lines.length-1)*lh/2 + fs*0.35;
+      lines.forEach((l,i)=>{ s += `<text x="${bb.cx}" y="${y0+i*lh}" text-anchor="middle" font-size="${fs}" font-weight="bold" fill="${txt}">${esc(l)}</text>`; });
+    }
+    if(idx.length){
+      const lab = idx.join(","), bw = 18 + lab.length*10;
+      const bx = bb.x+4, by = bb.h<34 ? bb.y-26 : bb.y+4;
+      s += `<rect x="${bx}" y="${by}" width="${bw}" height="24" rx="12" fill="#111827" stroke="#fff" stroke-width="1.5"/>`;
+      s += `<text x="${bx+bw/2}" y="${by+17}" text-anchor="middle" font-size="14" font-weight="bold" fill="#fff">${lab}</text>`;
+    }
+    s += `</g>`;
+  });
+  s += `</g></svg>`;
+  return s;
+}
+
+function render(){
+  $("map").innerHTML = buildSVG();
+  const tr = state.trail;
+  $("trailBox").style.display = tr.length ? "block" : "none";
+  $("trail").innerHTML = tr.map(p=>`<li>${esc(nameOf(p.id))} &mdash; ${fmt(p.t)}</li>`).join("");
+  document.querySelectorAll("#types button").forEach(b=>b.classList.toggle("sel", b.dataset.k===selType));
+  if(mode==="monitor"){
+    $("monHint").textContent = tr.length ? "Aktibong alerto. Sundin ang school emergency protocol at manatiling kalmado."
+      : (state.clear ? "All clear na. Ligtas na." : "Walang aktibong alerto. Buksan ang pinakabagong link o larawan mula sa GC.");
+  }
+}
+
+function save(){ try{ localStorage.setItem("emap2", JSON.stringify(state)); }catch(e){} }
+function load(){ try{ const v = JSON.parse(localStorage.getItem("emap2")); if(v && Array.isArray(v.trail)) state = v; }catch(e){} }
+
+function toHash(){
+  const p = new URLSearchParams();
+  if(state.clear && !state.trail.length) p.set("c", state.ct);
+  else if(state.trail.length){ p.set("t", state.type); p.set("h", state.trail.map(x=>x.id+"."+x.t).join("~")); }
+  return p.toString();
+}
+function fromHash(){
+  const p = new URLSearchParams(location.hash.slice(1));
+  if(p.get("c")) return {type:null,trail:[],clear:true,ct:+p.get("c")};
+  if(p.get("h") && TYPES[p.get("t")]){
+    const trail = p.get("h").split("~").map(s=>{const [id,t]=s.split(".");return {id,t:+t};})
+      .filter(x=>AREAS.some(a=>a.id===x.id) && x.t);
+    if(trail.length) return {type:p.get("t"),trail,clear:false,ct:0};
+  }
+  return null;
+}
+
+function msgText(){
+  const tr = state.trail;
+  if(!tr.length && state.clear) return `✅ ALL CLEAR (${fmt(state.ct)})\n${SCHOOL}\nLigtas na. Salamat po.`;
+  if(!tr.length) return "";
+  const cur = tr[tr.length-1];
+  return `🚨 ${TYPES[state.type].label} ALERT\nLokasyon: ${nameOf(cur.id)}\nOras: ${fmt(cur.t)}\n`
+    + (tr.length>1 ? `Ruta: ${tr.map(x=>nameOf(x.id)).join(" → ")}\n` : "")
+    + `Sundin ang school emergency protocol. Manatiling kalmado.\n— ${SCHOOL}`;
+}
+function linkText(){
+  if(!/^https?:/.test(location.protocol)) return "";
+  const h = toHash(); return h ? "\n"+location.href.split("#")[0]+"#"+h : "";
+}
+
+function toast(m){ const t=$("toast"); t.textContent=m; t.style.display="block"; clearTimeout(toast.k); toast.k=setTimeout(()=>t.style.display="none",4000); }
+async function copy(text){
+  try{ await navigator.clipboard.writeText(text); return true; }catch(e){}
+  const ta=document.createElement("textarea"); ta.value=text; document.body.appendChild(ta); ta.select();
+  let ok=false; try{ ok=document.execCommand("copy"); }catch(e){} ta.remove(); return ok;
+}
+
+async function makePNG(){
+  const W2 = 1980, H2 = 1392;
+  const svg = buildSVG().replace("<svg ", `<svg width="${W2}" height="${H2}" `);
+  const img = new Image();
+  await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg); });
+  const c = document.createElement("canvas"); c.width=W2; c.height=H2;
+  c.getContext("2d").drawImage(img,0,0);
+  return new Promise(r=>c.toBlob(r,"image/png"));
+}
+function download(blob,name){
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
+
+async function shareAlert(){
+  const text = msgText();
+  if(!text){ toast("Wala pang alerto. I-tap muna ang area sa mapa."); return; }
+  try{
+    const blob = await makePNG();
+    const file = new File([blob], "alerto-"+Date.now()+".png", {type:"image/png"});
+    const full = text + linkText();
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{ await navigator.share({files:[file], text:full}); return; }
+      catch(e){ if(e.name==="AbortError") return; }
+    }
+    download(blob, file.name);
+    await copy(full);
+    toast("Na-download ang larawan at nakopya ang mensahe. I-attach at i-paste sa GC.");
+  }catch(e){ toast("May error sa paggawa ng larawan. Subukan ang 'Kopyahin ang mensahe'."); }
+}
+
+function setMode(m){
+  mode = m;
+  document.body.classList.toggle("op", m==="operator");
+  $("opBtn").textContent = m==="operator" ? "Operator mode" : "Operator";
+  render();
+}
+function askPin(){ const v = prompt("Operator PIN:"); return v !== null && v === PIN; }
+
+// events
+$("map").addEventListener("click", e=>{
+  if(mode!=="operator") return;
+  const g = e.target.closest("[data-id]"); if(!g) return;
+  const id = g.dataset.id, last = state.trail[state.trail.length-1];
+  if(last && last.id===id) return;
+  state.type = selType; state.clear = false;
+  state.trail.push({id, t:Date.now()});
+  if(navigator.vibrate) navigator.vibrate(60);
+  save(); render();
+});
+$("types").innerHTML = Object.keys(TYPES).map(k=>`<button data-k="${k}">${TYPES[k].btn}</button>`).join("");
+$("types").addEventListener("click", e=>{
+  const b = e.target.closest("button"); if(!b) return;
+  selType = b.dataset.k; if(state.trail.length){ state.type = selType; save(); } render();
+});
+$("shareBtn").onclick = shareAlert;
+$("dlBtn").onclick = async ()=>{ if(!state.trail.length && !state.clear){toast("Wala pang alerto.");return;} download(await makePNG(),"alerto-"+Date.now()+".png"); };
+$("copyMsgBtn").onclick = async ()=>{ const t=msgText(); if(!t){toast("Wala pang alerto.");return;} toast(await copy(t+linkText()) ? "Nakopya ang mensahe." : "Hindi makopya."); };
+$("copyLinkBtn").onclick = async ()=>{
+  const l = linkText().trim();
+  if(!l){ toast("Gumagana lang ang link kung naka-host ang file (hal. GitHub Pages). Gamitin ang larawan."); return; }
+  toast(await copy(l) ? "Nakopya ang link." : "Hindi makopya.");
+};
+$("undoBtn").onclick = ()=>{ state.trail.pop(); if(!state.trail.length){ state.type=null; } save(); render(); };
+$("clearBtn").onclick = ()=>{
+  if(!confirm("I-clear ang alerto at gumawa ng ALL CLEAR?")) return;
+  state = {type:null, trail:[], clear:true, ct:Date.now()};
+  save(); render(); shareAlert();
+};
+$("opBtn").onclick = ()=>{ if(mode==="operator") return; if(askPin()){ load(); setMode("operator"); } };
+window.addEventListener("hashchange", ()=>{ const h=fromHash(); if(h && mode==="monitor"){ state=h; render(); } });
+
+// start
+$("school").textContent = SCHOOL + " — Emergency Map";
+const fromLink = fromHash();
+if(fromLink){ state = fromLink; setMode("monitor"); }
+else { load(); if(askPin()) setMode("operator"); else setMode("monitor"); }
+</script>
+</body>
+</html>
