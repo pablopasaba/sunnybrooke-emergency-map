@@ -23,6 +23,8 @@ button.sel{background:#dc2626}
 button.primary{background:#2563eb;font-weight:700;flex:1 1 100%}
 button.clear{background:#16a34a;font-weight:700}
 button.small{padding:6px 10px;font-size:12px}
+#resp button{border-left:10px solid var(--c);padding:8px 10px}
+#resp button.on{outline:3px solid #fff;background:#475569}
 #trail{margin:0;padding-left:20px;font-size:14px;line-height:1.6}
 .hint{font-size:13px;color:#cbd5e1;margin:6px 0 0}
 #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#000c;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;max-width:90%;display:none;text-align:center}
@@ -44,6 +46,10 @@ body.op .mon-only{display:none}
     <div class="row" id="types"></div>
     <h2 style="margin-top:12px">2. I-tap ang area sa mapa kung nasaan ito</h2>
     <p class="hint">Pwedeng i-tap ulit ang ibang area kapag lumipat ang intruder. Maitatala ang ruta (may numero sa bawat area na dinaanan).</p>
+    <h2 style="margin-top:12px">Mga Responder (opsyonal): piliin, tapos i-tap kahit saan sa mapa</h2>
+    <div class="row" id="resp"></div>
+    <p class="hint" id="respHint"></p>
+    <div class="row" style="margin-top:6px"><button class="small" id="respDel">Alisin ang napiling responder</button></div>
     <h2 style="margin-top:12px">3. Ipadala sa GC</h2>
     <div class="row">
       <button class="primary" id="shareVidBtn">Ibahagi sa GC bilang VIDEO na may BLINK</button>
@@ -119,13 +125,39 @@ const TYPES = {
   medical: {label:"MEDICAL",  btn:"Medical"},
   other:   {label:"EMERGENCY",btn:"Iba pa"}
 };
+// Mga responder (isa bawat uri). name = nakasulat sa bilog, id = numero.
+const RESP = [
+  {id:"1", name:"SWAT",  color:"#7c3aed"},
+  {id:"2", name:"Pulis", color:"#2563eb"},
+  {id:"3", name:"FireF", color:"#ea580c"},
+  {id:"4", name:"Army",  color:"#4d5d2a"},
+  {id:"5", name:"1stA",  color:"#16a34a"},
+  {id:"6", name:"Doc",   color:"#db2777"},
+  {id:"7", name:"Nrs",   color:"#0891b2"},
+  {id:"8", name:"Tanod", color:"#a16207"},
+  {id:"9", name:"Princi",color:"#475569"}
+];
 /* ====== HANGGANG DITO ====== */
 
 const $ = id => document.getElementById(id);
-let state = {type:null, trail:[], clear:false, ct:0};
+let state = {type:null, trail:[], clear:false, ct:0, resp:{}};
+let selResp = null;
 let selType = "intruder";
 let mode = "monitor";
 
+const respLabel = id => { const r = RESP.find(x=>x.id===id); return r ? r.name+" "+r.id : id; };
+function inPoly(x,y,pts){
+  let c=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+    const xi=pts[i][0],yi=pts[i][1],xj=pts[j][0],yj=pts[j][1];
+    if(((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi)) c=!c;
+  }
+  return c;
+}
+function areaAt(x,y){
+  for(let i=AREAS.length-1;i>=0;i--){ if(inPoly(x,y,AREAS[i].pts)) return AREAS[i].name; }
+  return "Bakuran ng paaralan";
+}
 const nameOf = id => (AREAS.find(a=>a.id===id)||{name:id}).name;
 const fmt = t => new Date(t).toLocaleTimeString("en-PH",{hour:"numeric",minute:"2-digit"});
 const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
@@ -191,6 +223,14 @@ function buildSVG(dim){
     }
     s += `</g>`;
   });
+  RESP.forEach(r=>{
+    const q = state.resp && state.resp[r.id]; if(!q) return;
+    s += `<g class="blink"${dim?' opacity="0.3"':""} pointer-events="none">`;
+    s += `<circle cx="${q.x}" cy="${q.y}" r="22" fill="${r.color}" stroke="#fff" stroke-width="3"/>`;
+    s += `<text x="${q.x}" y="${q.y-2}" text-anchor="middle" font-size="10" font-weight="bold" fill="#fff">${esc(r.name)}</text>`;
+    s += `<text x="${q.x}" y="${q.y+12}" text-anchor="middle" font-size="14" font-weight="bold" fill="#fff">${r.id}</text>`;
+    s += `</g>`;
+  });
   s += `</g></svg>`;
   return s;
 }
@@ -201,6 +241,13 @@ function render(){
   $("trailBox").style.display = tr.length ? "block" : "none";
   $("trail").innerHTML = tr.map(p=>`<li>${esc(nameOf(p.id))} &mdash; ${fmt(p.t)}</li>`).join("");
   document.querySelectorAll("#types button").forEach(b=>b.classList.toggle("sel", b.dataset.k===selType));
+  document.querySelectorAll("#resp [data-r]").forEach(b=>{
+    b.classList.toggle("on", b.dataset.r===selResp);
+    b.textContent = ((state.resp && state.resp[b.dataset.r]) ? "✓ " : "") + respLabel(b.dataset.r);
+  });
+  $("respHint").textContent = selResp
+    ? "Naka-pili: "+respLabel(selResp)+". I-tap ang mapa para ilagay o ilipat. Pindutin ulit ang button nito para bumalik sa pagpili ng area."
+    : "Walang napiling responder. Ang pag-tap sa mapa ay pumipili ng area.";
   if(mode==="monitor"){
     $("monHint").textContent = tr.length ? "Aktibong alerto. Sundin ang school emergency protocol at manatiling kalmado."
       : (state.clear ? "All clear na. Ligtas na." : "Walang aktibong alerto. Buksan ang pinakabagong link o larawan mula sa GC.");
@@ -208,21 +255,28 @@ function render(){
 }
 
 function save(){ try{ localStorage.setItem("emap2", JSON.stringify(state)); }catch(e){} }
-function load(){ try{ const v = JSON.parse(localStorage.getItem("emap2")); if(v && Array.isArray(v.trail)) state = v; }catch(e){} }
+function load(){ try{ const v = JSON.parse(localStorage.getItem("emap2")); if(v && Array.isArray(v.trail)){ state = v; if(!state.resp) state.resp = {}; } }catch(e){} }
 
+function respStr(){
+  return Object.keys(state.resp||{}).map(k=>k+"."+Math.round(state.resp[k].x)+"."+Math.round(state.resp[k].y)).join("~");
+}
 function toHash(){
   const p = new URLSearchParams();
   if(state.clear && !state.trail.length) p.set("c", state.ct);
-  else if(state.trail.length){ p.set("t", state.type); p.set("h", state.trail.map(x=>x.id+"."+x.t).join("~")); }
+  else if(state.trail.length){ p.set("t", state.type); p.set("h", state.trail.map(x=>x.id+"."+x.t).join("~")); const rs = respStr(); if(rs) p.set("r", rs); }
   return p.toString();
 }
 function fromHash(){
   const p = new URLSearchParams(location.hash.slice(1));
-  if(p.get("c")) return {type:null,trail:[],clear:true,ct:+p.get("c")};
+  if(p.get("c")) return {type:null,trail:[],clear:true,ct:+p.get("c"),resp:{}};
   if(p.get("h") && TYPES[p.get("t")]){
     const trail = p.get("h").split("~").map(s=>{const [id,t]=s.split(".");return {id,t:+t};})
       .filter(x=>AREAS.some(a=>a.id===x.id) && x.t);
-    if(trail.length) return {type:p.get("t"),trail,clear:false,ct:0};
+    if(trail.length){
+      const resp = {};
+      (p.get("r")||"").split("~").forEach(s=>{ const [k,x,y]=s.split("."); if(RESP.some(r=>r.id===k) && x!=="" && y!=="" && x!==undefined && y!==undefined && isFinite(+x) && isFinite(+y)) resp[k]={x:+x,y:+y}; });
+      return {type:p.get("t"),trail,clear:false,ct:0,resp};
+    }
   }
   return null;
 }
@@ -232,8 +286,10 @@ function msgText(){
   if(!tr.length && state.clear) return `✅ ALL CLEAR (${fmt(state.ct)})\n${SCHOOL}\nLigtas na. Salamat po.`;
   if(!tr.length) return "";
   const cur = tr[tr.length-1];
+  const rl = RESP.filter(r=>state.resp && state.resp[r.id]).map(r=>respLabel(r.id)+" – "+areaAt(state.resp[r.id].x, state.resp[r.id].y));
   return `🚨 ${TYPES[state.type].label} ALERT\nLokasyon: ${nameOf(cur.id)}\nOras: ${fmt(cur.t)}\n`
     + (tr.length>1 ? `Ruta: ${tr.map(x=>nameOf(x.id)).join(" → ")}\n` : "")
+    + (rl.length ? `Mga responder: ${rl.join("; ")}\n` : "")
     + `Sundin ang school emergency protocol. Manatiling kalmado.\n— ${SCHOOL}`;
 }
 function linkText(){
@@ -339,7 +395,7 @@ async function makeVideo(){
   rec.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
   const done = new Promise(r=>{ rec.onstop = r; });
   rec.start();
-  const t0 = performance.now(), DUR = 4000;
+  const t0 = performance.now(), DUR = 10000;
   await new Promise(res=>{
     const tick = ()=>{
       const t = performance.now()-t0;
@@ -371,7 +427,7 @@ async function shareVideo(){
   try{
     let v = (vidCache && vidCache.key===vidKey()) ? vidCache : null;
     const wasReady = !!v;
-    if(!v){ toast("Ginagawa ang video (mga 5 segundo)..."); v = await prepVideo(); }
+    if(!v){ toast("Ginagawa ang video (mga 12 segundo)..."); v = await prepVideo(); }
     const file = new File([v.blob], "alerto-"+Date.now()+"."+v.ext, {type: v.blob.type});
     const full = text + linkText();
     if(navigator.canShare && navigator.canShare({files:[file]})){
@@ -422,6 +478,16 @@ function askPin(){ const v = prompt("Operator PIN:"); return v !== null && v ===
 // events
 $("map").addEventListener("click", e=>{
   if(mode!=="operator") return;
+  if(selResp){
+    const svg = $("map").querySelector("svg"), pt = svg.createSVGPoint();
+    pt.x = e.clientX; pt.y = e.clientY;
+    const q = pt.matrixTransform(svg.getScreenCTM().inverse());
+    const x = Math.max(25, Math.min(965, Math.round(q.x))), y = Math.max(25, Math.min(640, Math.round(q.y-32)));
+    state.resp = state.resp || {}; state.resp[selResp] = {x,y};
+    if(navigator.vibrate) navigator.vibrate(40);
+    save(); render(); schedulePrep();
+    return;
+  }
   const g = e.target.closest("[data-id]"); if(!g) return;
   const id = g.dataset.id, last = state.trail[state.trail.length-1];
   if(last && last.id===id) return;
@@ -435,6 +501,16 @@ $("types").addEventListener("click", e=>{
   const b = e.target.closest("button"); if(!b) return;
   selType = b.dataset.k; if(state.trail.length){ state.type = selType; save(); } render();
 });
+$("resp").innerHTML = RESP.map(r=>`<button data-r="${r.id}" style="--c:${r.color}">${respLabel(r.id)}</button>`).join("");
+$("resp").addEventListener("click", e=>{
+  const b = e.target.closest("button"); if(!b) return;
+  selResp = (selResp===b.dataset.r) ? null : b.dataset.r; render();
+});
+$("respDel").onclick = ()=>{
+  if(!selResp){ toast("Pumili muna ng responder na aalisin."); return; }
+  if(state.resp) delete state.resp[selResp];
+  save(); render(); schedulePrep();
+};
 $("shareBtn").onclick = ()=>shareAlert("png");
 $("shareVidBtn").onclick = shareVideo;
 $("dlVidBtn").onclick = async ()=>{
@@ -458,7 +534,7 @@ $("copyLinkBtn").onclick = async ()=>{
 $("undoBtn").onclick = ()=>{ state.trail.pop(); if(!state.trail.length){ state.type=null; } save(); render(); };
 $("clearBtn").onclick = ()=>{
   if(!confirm("I-clear ang alerto at gumawa ng ALL CLEAR?")) return;
-  state = {type:null, trail:[], clear:true, ct:Date.now()};
+  state = {type:null, trail:[], clear:true, ct:Date.now(), resp:{}};
   save(); render(); shareAlert();
 };
 $("opBtn").onclick = ()=>{ if(mode==="operator") return; if(askPin()){ load(); setMode("operator"); } };
